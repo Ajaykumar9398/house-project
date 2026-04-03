@@ -7,7 +7,7 @@ import {
   CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell
 } from 'recharts'
-import { Download, Filter, RefreshCw, Target, AlertCircle } from 'lucide-react'
+import { Download, RefreshCw, Target, AlertCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec489a']
@@ -23,11 +23,8 @@ interface Statistics {
     q3: number
   }
   avg_price_by_bedrooms: Record<string, number>
-
-  // ✅ FIXED
   total_properties_filtered: number
   total_properties_available: number
-
   price_per_sqft: {
     mean: number
     min: number
@@ -45,35 +42,12 @@ interface WhatIfScenario {
   predicted_price: number
 }
 
-interface AvailableFilters {
-  bedrooms: {
-    min: number
-    max: number
-    available: number[]
-    distribution: Record<string, number>
-  }
-  price: {
-    min: number
-    max: number
-    mean: number
-    median: number
-  }
-  total_properties: number
-}
-
 export default function MarketAnalysisPage() {
   const [statistics, setStatistics] = useState<Statistics | null>(null)
   const [correlations, setCorrelations] = useState<Correlations | null>(null)
   const [segments, setSegments] = useState<any>(null)
   const [whatIfData, setWhatIfData] = useState<WhatIfScenario[]>([])
   const [whatIfFeature, setWhatIfFeature] = useState('square_footage')
-  const [filters, setFilters] = useState({
-    minBedrooms: '',
-    maxBedrooms: '',
-    minPrice: '',
-    maxPrice: '',
-  })
-  const [availableFilters, setAvailableFilters] = useState<AvailableFilters | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('overview')
   const [error, setError] = useState<{
@@ -83,46 +57,23 @@ export default function MarketAnalysisPage() {
     availableData?: any
   } | null>(null)
 
-  // Fetch available filters on component mount
-  useEffect(() => {
-    fetchAvailableFilters()
-  }, [])
-
-  const fetchAvailableFilters = async () => {
-    try {
-      const response = await axios.get('http://localhost:8003/api/market/available-filters')
-      setAvailableFilters(response.data)
-    } catch (error) {
-      console.error('Error fetching available filters:', error)
-    }
-  }
-
-  const fetchAllData = async () => {
+  const fetchOverviewData = async () => {
     setLoading(true)
     setError(null)
 
     try {
-      const params: any = {}
-      if (filters.minBedrooms) params.min_bedrooms = parseInt(filters.minBedrooms)
-      if (filters.maxBedrooms) params.max_bedrooms = parseInt(filters.maxBedrooms)
-      if (filters.minPrice) params.min_price = parseFloat(filters.minPrice)
-      if (filters.maxPrice) params.max_price = parseFloat(filters.maxPrice)
-
-      const [statsRes, corrRes, segmentsRes] = await Promise.all([
-        axios.get('http://localhost:8003/api/market/statistics', { params }),
+      const [statsRes, corrRes] = await Promise.all([
+        axios.get('http://localhost:8003/api/market/statistics'),
         axios.get('http://localhost:8003/api/market/correlations'),
-        axios.get('http://localhost:8003/api/market/segments'),
       ])
 
       setStatistics(statsRes.data)
       setCorrelations(corrRes.data)
-      setSegments(segmentsRes.data)
       setError(null)
     } catch (error: any) {
-      console.error('Error fetching data:', error)
+      console.error('Error fetching overview data:', error)
 
       if (error.response?.status === 404) {
-        // Handle 404 error with detailed message from API
         const errorDetail = error.response.data.detail
         setError({
           type: 'NO_DATA',
@@ -131,8 +82,7 @@ export default function MarketAnalysisPage() {
           availableData: errorDetail.available_data_range || null
         })
         setStatistics(null)
-        setSegments(null)
-        toast.error('No data found with current filters')
+        toast.error('No data found')
       } else if (error.response?.status === 503) {
         setError({
           type: 'SERVICE_UNAVAILABLE',
@@ -146,6 +96,19 @@ export default function MarketAnalysisPage() {
         })
         toast.error('Failed to fetch market data')
       }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const fetchSegmentsData = async () => {
+    setLoading(true)
+    try {
+      const segmentsRes = await axios.get('http://localhost:8003/api/market/segments')
+      setSegments(segmentsRes.data)
+    } catch (error) {
+      console.error('Error fetching segments:', error)
+      toast.error('Failed to fetch segments data')
     } finally {
       setLoading(false)
     }
@@ -183,33 +146,22 @@ export default function MarketAnalysisPage() {
     }
   }
 
+  // Fetch data based on active tab
   useEffect(() => {
-    fetchAllData()
-  }, [filters])
+    if (activeTab === 'overview') {
+      fetchOverviewData()
+    } else if (activeTab === 'segments') {
+      fetchSegmentsData()
+    }
+  }, [activeTab])
 
   useEffect(() => {
     runWhatIfAnalysis()
   }, [whatIfFeature])
 
-  const handleResetFilters = () => {
-    setFilters({
-      minBedrooms: '',
-      maxBedrooms: '',
-      minPrice: '',
-      maxPrice: '',
-    })
-  }
-
   const exportData = async (format: string) => {
     try {
-      const params: any = {}
-      if (filters.minBedrooms) params.min_bedrooms = parseInt(filters.minBedrooms)
-      if (filters.maxBedrooms) params.max_bedrooms = parseInt(filters.maxBedrooms)
-      if (filters.minPrice) params.min_price = parseFloat(filters.minPrice)
-      if (filters.maxPrice) params.max_price = parseFloat(filters.maxPrice)
-
       const response = await axios.get(`http://localhost:8003/api/market/export/${format.toLowerCase()}`, {
-        params,
         responseType: 'blob'
       })
       const url = window.URL.createObjectURL(new Blob([response.data]))
@@ -225,7 +177,8 @@ export default function MarketAnalysisPage() {
     }
   }
 
-  if (loading && !statistics) {
+  // Show loading only for current tab
+  if (loading && activeTab === 'overview' && !statistics) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
@@ -270,7 +223,7 @@ export default function MarketAnalysisPage() {
             <Download className="h-4 w-4" />
             Export PDF
           </button>
-          <button onClick={fetchAllData} className="btn-secondary">
+          <button onClick={fetchOverviewData} className="btn-secondary">
             <RefreshCw className="h-4 w-4" />
           </button>
         </div>
@@ -289,81 +242,34 @@ export default function MarketAnalysisPage() {
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
               }`}
             >
-              {tab}
+              {tab === 'overview' ? 'Market Overview' :
+               tab === 'segments' ? 'Market Segments' :
+               'What-If Analysis'}
             </button>
           ))}
         </nav>
       </div>
 
-      {/* Filters */}
-      <div className="card">
-        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-          <Filter className="h-5 w-5" />
-          Filters
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
-            <label className="label">Min Bedrooms</label>
-            <input
-              type="number"
-              value={filters.minBedrooms}
-              onChange={(e) => setFilters({...filters, minBedrooms: e.target.value})}
-              className="input-field"
-              placeholder={`Min ${availableFilters?.bedrooms?.min || 1}`}
-              min={availableFilters?.bedrooms?.min}
-              max={availableFilters?.bedrooms?.max}
-            />
-            {availableFilters && (
-              <p className="text-xs text-gray-500 mt-1">
-                Available: {availableFilters.bedrooms.available.join(', ')}
-              </p>
-            )}
-          </div>
-          <div>
-            <label className="label">Max Bedrooms</label>
-            <input
-              type="number"
-              value={filters.maxBedrooms}
-              onChange={(e) => setFilters({...filters, maxBedrooms: e.target.value})}
-              className="input-field"
-              placeholder={`Max ${availableFilters?.bedrooms?.max || 10}`}
-              min={availableFilters?.bedrooms?.min}
-              max={availableFilters?.bedrooms?.max}
-            />
-          </div>
-          <div>
-            <label className="label">Min Price</label>
-            <input
-              type="number"
-              value={filters.minPrice}
-              onChange={(e) => setFilters({...filters, minPrice: e.target.value})}
-              className="input-field"
-              placeholder={`Min $${availableFilters?.price?.min?.toLocaleString() || 0}`}
-            />
-          </div>
-          <div>
-            <label className="label">Max Price</label>
-            <input
-              type="number"
-              value={filters.maxPrice}
-              onChange={(e) => setFilters({...filters, maxPrice: e.target.value})}
-              className="input-field"
-              placeholder={`Max $${availableFilters?.price?.max?.toLocaleString() || 0}`}
-            />
-          </div>
+      {/* Info message for Segments tab */}
+      {activeTab === 'segments' && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+          <p className="text-sm text-blue-800">
+            📊 Showing complete market segmentation across all properties.
+          </p>
         </div>
+      )}
 
-        {(filters.minBedrooms || filters.maxBedrooms || filters.minPrice || filters.maxPrice) && (
-          <div className="mt-4 flex justify-end">
-            <button onClick={handleResetFilters} className="text-sm text-red-600 hover:text-red-800">
-              Clear Filters
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Info message for What-If tab */}
+      {activeTab === 'what-if' && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+          <p className="text-sm text-purple-800">
+            🎯 Predictive analysis based on a standard property (1800 sq ft, 3 beds, 2 baths). Adjust parameters to see price impacts.
+          </p>
+        </div>
+      )}
 
-      {/* Error Display */}
-      {error && (
+      {/* Error Display - Only for Overview tab */}
+      {activeTab === 'overview' && error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-6">
           <div className="flex items-start gap-3">
             <AlertCircle className="h-6 w-6 text-red-600 flex-shrink-0 mt-0.5" />
@@ -407,23 +313,16 @@ export default function MarketAnalysisPage() {
                   </div>
                 </div>
               )}
-
-              <button
-                onClick={handleResetFilters}
-                className="mt-4 px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition-colors"
-              >
-                Reset Filters
-              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Only show data if no error and data exists */}
-      {!error && activeTab === 'overview' && statistics && (
+      {/* Overview Tab Content */}
+      {activeTab === 'overview' && !error && statistics && (
         <>
           {/* Statistics Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="card">
               <p className="text-sm text-gray-600">Average Price</p>
               <p className="text-2xl font-bold mt-1">${statistics.price?.mean?.toLocaleString() || '0'}</p>
@@ -440,14 +339,9 @@ export default function MarketAnalysisPage() {
               <p className="text-xs text-gray-500 mt-1">Range: ${statistics.price_per_sqft?.min?.toFixed(2) || '0'} - ${statistics.price_per_sqft?.max?.toFixed(2) || '0'}</p>
             </div>
             <div className="card">
-              <p className="text-sm text-gray-600">Filtered Properties</p>
+              <p className="text-sm text-gray-600">Total Properties</p>
               <p className="text-2xl font-bold mt-1">{statistics.total_properties_filtered || 0}</p>
-              <p className="text-xs text-gray-500 mt-1">Matching current filters</p>
-            </div>
-            <div className="card bg-blue-50 border-blue-200">
-              <p className="text-sm text-blue-800">Total Available</p>
-              <p className="text-2xl font-bold mt-1 text-blue-900">{statistics.total_properties_available || 0}</p>
-              <p className="text-xs text-blue-600 mt-1">All properties in dataset</p>
+              <p className="text-xs text-gray-500 mt-1">Properties in dataset</p>
             </div>
           </div>
 
@@ -509,7 +403,8 @@ export default function MarketAnalysisPage() {
         </>
       )}
 
-      {!error && activeTab === 'segments' && segments && (
+      {/* Segments Tab Content */}
+      {activeTab === 'segments' && segments && (
         <>
           <div className="card">
             <h2 className="text-lg font-semibold mb-4">Analysis by Bedroom Count</h2>
@@ -554,7 +449,8 @@ export default function MarketAnalysisPage() {
         </>
       )}
 
-      {!error && activeTab === 'what-if' && (
+      {/* What-If Tab Content */}
+      {activeTab === 'what-if' && (
         <div className="card">
           <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
             <Target className="h-5 w-5" />

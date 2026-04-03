@@ -146,44 +146,31 @@ def get_unit(column: str) -> str:
     }
     return units.get(column, '')
 
+def clamp_input(features: Dict[str, Any], statistics: Dict[str, Any]):
+    ranges = statistics.get("valid_ranges", {})
+    adjusted = {}
+
+    for field, value in features.items():
+        if field in ranges:
+            min_val = ranges[field]["min"]
+            max_val = ranges[field]["max"]
+            adjusted[field] = max(min_val, min(value, max_val))
+        else:
+            adjusted[field] = value
+
+    return adjusted
 
 def train_model():
     """Train machine learning model"""
-    csv_path = "D:\\house-project\\data\\House Price Dataset.csv"
+    csv_path = r"D:\\house-project\\data\\House Price Dataset.csv"
 
+    print(os.path.exists(csv_path))
     if not os.path.exists(csv_path):
-        # Generate sample data if CSV doesn't exist
-        np.random.seed(42)
-        n_samples = 1000
-
-        data = {
-            'square_footage': np.random.normal(2000, 500, n_samples),
-            'bedrooms': np.random.randint(1, 6, n_samples),
-            'bathrooms': np.random.choice([1, 1.5, 2, 2.5, 3, 3.5, 4], n_samples),
-            'year_built': np.random.randint(1950, 2024, n_samples),
-            'lot_size': np.random.normal(8000, 2000, n_samples),
-            'distance_to_city_center': np.random.exponential(5, n_samples),
-            'school_rating': np.random.uniform(3, 10, n_samples),
-        }
-
-        df = pd.DataFrame(data)
-
-        # Generate realistic prices
-        df['price'] = (
-                df['square_footage'] * 150 +
-                df['bedrooms'] * 15000 +
-                df['bathrooms'] * 10000 +
-                (df['year_built'] - 2000) * 1000 +
-                df['lot_size'] * 2 +
-                -df['distance_to_city_center'] * 5000 +
-                df['school_rating'] * 15000 +
-                np.random.normal(0, 50000, n_samples)
+        # If CSV doesn't exist, raise error
+        raise FileNotFoundError(
+            f"CSV file not found at {csv_path}. "
+            "Please ensure the file exists and the path is correct."
         )
-
-        # Ensure positive prices
-        df['price'] = df['price'].clip(lower=50000)
-
-        print("✅ Generated sample dataset with 1000 properties")
     else:
         df = pd.read_csv(csv_path)
         print(f"✅ Loaded {len(df)} properties from {csv_path}")
@@ -271,22 +258,28 @@ async def get_validation_rules():
 @app.post("/predict", response_model=PredictionResponse)
 async def predict(request: PredictionRequest):
     try:
+        print(f"Received prediction request: {request}")  # Debug log
+
         if isinstance(request.features, HouseFeatures):
             features_list = [request.features]
         else:
             features_list = request.features
 
+        # Validate each feature set
         X = []
-        for features in features_list:
-            X.append([
-                features.square_footage,
-                features.bedrooms,
-                features.bathrooms,
-                features.year_built,
-                features.lot_size,
-                features.distance_to_city_center,
-                features.school_rating
-            ])
+        for idx, features in enumerate(features_list):
+            try:
+                X.append([
+                    float(features.square_footage),
+                    int(features.bedrooms),
+                    float(features.bathrooms),
+                    int(features.year_built),
+                    float(features.lot_size),
+                    float(features.distance_to_city_center),
+                    float(features.school_rating)
+                ])
+            except Exception as e:
+                raise ValueError(f"Error processing feature set {idx}: {str(e)}")
 
         predictions = model.predict(X).tolist()
 
@@ -298,6 +291,7 @@ async def predict(request: PredictionRequest):
         )
 
     except Exception as e:
+        print(f"Prediction error: {str(e)}")  # Debug log
         raise HTTPException(
             status_code=400,
             detail=f"Invalid input values: {str(e)}"

@@ -11,7 +11,8 @@ interface Statistics {
     min: number
     max: number
   }
-  total_properties: number
+  total_properties_filtered: number
+  total_properties_available: number
   price_per_sqft: {
     mean: number
   }
@@ -68,7 +69,7 @@ export default function Dashboard() {
     },
     {
       title: 'Total Properties',
-      value: statistics?.total_properties || 0,
+      value: statistics?.total_properties_available || 0,
       icon: Award,
       color: 'text-orange-600',
       bg: 'bg-orange-50'

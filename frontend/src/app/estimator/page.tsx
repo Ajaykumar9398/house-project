@@ -22,7 +22,7 @@ export default function EstimatorPage() {
   const [loading, setLoading] = useState(false)
   const [rules, setRules] = useState<any>(null)
 
-  // ✅ NEW: inline validation
+  // inline validation
   const [errors, setErrors] = useState<any>({})
 
   const FALLBACK_LIMITS: any = {
@@ -53,12 +53,12 @@ export default function EstimatorPage() {
     return FALLBACK_LIMITS[field]
   }
 
-  // ✅ validation logic
+  // validation logic
   const validateField = (name: string, value: number) => {
     const limits = getLimits(name)
     if (!limits) return ""
     if (value < limits.min || value > limits.max) {
-      return `Recommended ${limits.min} - ${limits.max}`
+      return `Value should be between ${limits.min} - ${limits.max}`
     }
     return ""
   }
@@ -134,13 +134,6 @@ export default function EstimatorPage() {
               type="number"
               className="input-field"
             />
-
-            {/* Recommended */}
-            <p className="text-xs text-gray-500">
-              Recommended: {getLimits(key)?.suggested_min ?? getLimits(key).min}
-              {" - "}
-              {getLimits(key)?.suggested_max ?? getLimits(key).max}
-            </p>
 
             {/* Inline error */}
             {errors[key] && (

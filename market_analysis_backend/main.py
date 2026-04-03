@@ -10,9 +10,12 @@ import httpx
 from datetime import datetime
 from io import BytesIO, StringIO
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 import csv
 import os
 
@@ -33,7 +36,7 @@ csv_path = "D:\\house-project\\data\\House Price Dataset.csv"
 # Load dataset
 if os.path.exists(csv_path):
     df = pd.read_csv(csv_path)
-    TOTAL_PROPERTIES = len(df)  # Store total count
+    TOTAL_PROPERTIES = len(df)
     print("DF SHAPE:", df.shape)
     print("HEAD:", df.head())
     print("COLUMNS:", df.columns.tolist())
@@ -41,7 +44,6 @@ if os.path.exists(csv_path):
     print(f"📊 Available bedroom counts: {sorted(df['bedrooms'].unique())}")
     print(f"💰 Price range: ${df['price'].min():,.2f} - ${df['price'].max():,.2f}")
 else:
-    # If CSV doesn't exist, raise error
     raise FileNotFoundError(
         f"CSV file not found at {csv_path}. "
         "Please ensure the file exists and the path is correct."
@@ -153,10 +155,8 @@ async def get_statistics(
     filtered_df = apply_filters(df, filters)
 
     if len(filtered_df) == 0:
-        # Get available bedroom counts for helpful error message
         available_bedrooms = sorted(df['bedrooms'].unique())
 
-        # Create detailed error response
         error_detail = {
             "error": "NO_DATA_FOUND",
             "message": f"No properties match the specified filters",
@@ -182,7 +182,6 @@ async def get_statistics(
             "suggestions": []
         }
 
-        # Add specific suggestions based on the filter
         if min_bedrooms is not None and min_bedrooms > df['bedrooms'].max():
             error_detail["suggestions"].append(
                 f"min_bedrooms={min_bedrooms} is too high. Maximum available bedrooms is {int(df['bedrooms'].max())}. "
@@ -208,7 +207,6 @@ async def get_statistics(
                 f"max_price=${max_price:,.0f} is too low. Minimum available price is ${df['price'].min():,.0f}"
             )
 
-        # General suggestion
         error_detail["suggestions"].append(
             f"Try one of these bedroom counts: {available_bedrooms}"
         )
@@ -233,8 +231,8 @@ async def get_statistics(
         },
         "avg_price_by_bedrooms": {str(k): float(v) for k, v in
                                   filtered_df.groupby('bedrooms')['price'].mean().to_dict().items()},
-        "total_properties_filtered": len(filtered_df),  # Changed: This is the filtered count
-        "total_properties_available": TOTAL_PROPERTIES,  # NEW: Total available in CSV
+        "total_properties_filtered": len(filtered_df),
+        "total_properties_available": TOTAL_PROPERTIES,
         "price_per_sqft": {
             "mean": float((filtered_df['price'] / filtered_df['square_footage']).mean()),
             "min": float((filtered_df['price'] / filtered_df['square_footage']).min()),
@@ -282,16 +280,26 @@ async def what_if_analysis(request: WhatIfRequest):
                 property_data = request.base_property.copy()
                 property_data[request.feature] = value
 
+                feature_data = {
+                    "square_footage": float(property_data.get("square_footage", 0)),
+                    "bedrooms": int(property_data.get("bedrooms", 1)),
+                    "bathrooms": float(property_data.get("bathrooms", 1)),
+                    "year_built": int(property_data.get("year_built", 2000)),
+                    "lot_size": float(property_data.get("lot_size", 5000)),
+                    "distance_to_city_center": float(property_data.get("distance_to_city_center", 5)),
+                    "school_rating": float(property_data.get("school_rating", 5))
+                }
+
                 response = await client.post(
                     f"{ML_MODEL_URL}/predict",
-                    json={"features": [property_data]}
+                    json={"features": [feature_data]}
                 )
                 response.raise_for_status()
                 prediction = response.json()['predictions'][0]
 
                 scenarios.append({
-                    "value": value,
-                    "predicted_price": prediction
+                    "value": float(value),
+                    "predicted_price": float(prediction)
                 })
 
         return {
@@ -299,12 +307,17 @@ async def what_if_analysis(request: WhatIfRequest):
             "scenarios": scenarios,
             "analysis": {
                 "price_range": f"${min(s['predicted_price'] for s in scenarios):,.0f} - ${max(s['predicted_price'] for s in scenarios):,.0f}",
-                "sensitivity": (scenarios[-1]['predicted_price'] - scenarios[0]['predicted_price']) / (
-                        request.max_value - request.min_value),
-                "optimal_value": max(scenarios, key=lambda x: x['predicted_price'])['value']
+                "sensitivity": float((scenarios[-1]['predicted_price'] - scenarios[0]['predicted_price']) / (
+                        request.max_value - request.min_value)),
+                "optimal_value": float(max(scenarios, key=lambda x: x['predicted_price'])['value'])
             }
         }
 
+    except httpx.HTTPError as e:
+        error_detail = f"ML Model error: {str(e)}"
+        if e.response:
+            error_detail += f" - Response: {e.response.text}"
+        raise HTTPException(status_code=400, detail=error_detail)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -317,7 +330,6 @@ async def get_market_segments():
         "by_location": {}
     }
 
-    # By bedrooms
     for bedrooms in sorted(df['bedrooms'].unique()):
         segment_df = df[df['bedrooms'] == bedrooms]
         segments["by_bedrooms"][str(bedrooms)] = {
@@ -327,7 +339,6 @@ async def get_market_segments():
             "avg_school_rating": float(segment_df['school_rating'].mean())
         }
 
-    # By price tier - use actual data distribution
     price_percentiles = df['price'].quantile([0.25, 0.5, 0.75])
 
     price_tiers = [
@@ -348,7 +359,6 @@ async def get_market_segments():
                 "price_range": f"${min_price:,.0f} - ${max_price:,.0f}"
             }
 
-    # By location
     distance_percentiles = df['distance_to_city_center'].quantile([0.33, 0.66])
 
     location_tiers = [
@@ -379,7 +389,6 @@ async def get_market_trends():
         "sqft_by_bedrooms": df.groupby('bedrooms')['square_footage'].mean().to_dict(),
     }
 
-    # Convert numpy types
     for key in trends:
         if isinstance(trends[key], dict):
             trends[key] = {str(k): float(v) for k, v in trends[key].items()}
@@ -389,11 +398,9 @@ async def get_market_trends():
 
 @app.get("/api/market/anomalies")
 async def detect_anomalies(threshold: float = Query(2.0, ge=1.5, le=3.0)):
-    # Calculate price per sq ft
     df_copy = df.copy()
     df_copy['price_per_sqft'] = df_copy['price'] / df_copy['square_footage']
 
-    # Z-score for anomaly detection
     mean_ppsf = df_copy['price_per_sqft'].mean()
     std_ppsf = df_copy['price_per_sqft'].std()
     df_copy['z_score'] = (df_copy['price_per_sqft'] - mean_ppsf) / std_ppsf
@@ -449,6 +456,205 @@ async def export_csv(
         iter([output.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=market_data.csv"}
+    )
+
+
+@app.get("/api/market/export/pdf")
+async def export_pdf(
+        min_bedrooms: Optional[int] = Query(None),
+        max_bedrooms: Optional[int] = Query(None),
+        min_price: Optional[float] = Query(None),
+        max_price: Optional[float] = Query(None)
+):
+    """Export market data as PDF report"""
+    filters = FilterParams(
+        min_bedrooms=min_bedrooms,
+        max_bedrooms=max_bedrooms,
+        min_price=min_price,
+        max_price=max_price
+    )
+
+    filtered_df = apply_filters(df, filters)
+
+    if len(filtered_df) == 0:
+        raise HTTPException(status_code=404, detail="No properties match the filters")
+
+    # Create PDF in memory
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, title="Market Analysis Report")
+    styles = getSampleStyleSheet()
+
+    # Create custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=30
+    )
+
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=16,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=12
+    )
+
+    story = []
+
+    # Title
+    story.append(Paragraph("Market Analysis Report", title_style))
+    story.append(Paragraph(f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+    story.append(Spacer(1, 20))
+
+    # Summary Statistics
+    story.append(Paragraph("Summary Statistics", heading_style))
+
+    stats_data = [
+        ["Metric", "Value"],
+        ["Total Properties", str(len(filtered_df))],
+        ["Average Price", f"${filtered_df['price'].mean():,.2f}"],
+        ["Median Price", f"${filtered_df['price'].median():,.2f}"],
+        ["Price Std Dev", f"${filtered_df['price'].std():,.2f}"],
+        ["Min Price", f"${filtered_df['price'].min():,.2f}"],
+        ["Max Price", f"${filtered_df['price'].max():,.2f}"],
+        ["Avg Price per Sq Ft", f"${(filtered_df['price'] / filtered_df['square_footage']).mean():.2f}"],
+        ["Avg Square Footage", f"{filtered_df['square_footage'].mean():.0f} sq ft"],
+        ["Avg School Rating", f"{filtered_df['school_rating'].mean():.1f}/10"]
+    ]
+
+    stats_table = Table(stats_data, colWidths=[200, 150])
+    stats_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (1, 0), colors.HexColor('#3b82f6')),
+        ('TEXTCOLOR', (0, 0), (1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (1, 0), 'CENTER'),
+        ('FONTNAME', (0, 0), (1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+
+    story.append(stats_table)
+    story.append(Spacer(1, 20))
+
+    # Price by Bedrooms
+    story.append(Paragraph("Average Price by Bedrooms", heading_style))
+
+    bedroom_data = [["Bedrooms", "Average Price", "Count"]]
+    for bedrooms in sorted(filtered_df['bedrooms'].unique()):
+        subset = filtered_df[filtered_df['bedrooms'] == bedrooms]
+        bedroom_data.append([
+            str(bedrooms),
+            f"${subset['price'].mean():,.2f}",
+            str(len(subset))
+        ])
+
+    bedroom_table = Table(bedroom_data, colWidths=[100, 150, 100])
+    bedroom_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#10b981')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+
+    story.append(bedroom_table)
+    story.append(Spacer(1, 20))
+
+    # Price Tiers
+    story.append(Paragraph("Price Tier Distribution", heading_style))
+
+    price_tiers_data = [["Tier", "Price Range", "Count", "Avg Price"]]
+
+    price_percentiles = filtered_df['price'].quantile([0.25, 0.5, 0.75])
+    tiers = [
+        ("Budget", filtered_df['price'].min(), price_percentiles[0.25]),
+        ("Mid-Range", price_percentiles[0.25], price_percentiles[0.5]),
+        ("Premium", price_percentiles[0.5], price_percentiles[0.75]),
+        ("Luxury", price_percentiles[0.75], filtered_df['price'].max())
+    ]
+
+    for tier_name, min_price, max_price in tiers:
+        tier_df = filtered_df[(filtered_df['price'] >= min_price) & (filtered_df['price'] <= max_price)]
+        if len(tier_df) > 0:
+            price_tiers_data.append([
+                tier_name,
+                f"${min_price:,.0f} - ${max_price:,.0f}",
+                str(len(tier_df)),
+                f"${tier_df['price'].mean():,.2f}"
+            ])
+
+    tier_table = Table(price_tiers_data, colWidths=[80, 130, 80, 130])
+    tier_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f59e0b')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+
+    story.append(tier_table)
+    story.append(Spacer(1, 20))
+
+    # Top Correlations
+    story.append(Paragraph("Top Feature Correlations with Price", heading_style))
+
+    corr_data = [["Feature", "Correlation"]]
+    features = ['square_footage', 'bedrooms', 'bathrooms', 'school_rating', 'year_built']
+    for feature in features:
+        correlation = filtered_df[feature].corr(filtered_df['price'])
+        corr_data.append([feature.replace('_', ' ').title(), f"{correlation:.3f}"])
+
+    corr_table = Table(corr_data, colWidths=[200, 150])
+    corr_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8b5cf6')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 10),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+
+    story.append(corr_table)
+
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=market_analysis_report.pdf"}
     )
 
 
